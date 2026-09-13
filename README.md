@@ -139,3 +139,30 @@ python -m transformer_study.experiment --validate artifacts/gate1
 ```
 
 On GitHub, open **Actions**, select **Gate 1**, and choose **Run workflow**. The full 8000-step Gate 1 experiment is manual-only and is **not part of ordinary push/pull-request CI**. Its artifact is named `transformer-study-gate1`.
+
+## Gate 2: causal transport across nonlinear routes
+
+Gate 2 follows only because Gate 1 found residual geometry richer than a task-mean translation. It keeps the Gate 1 architecture, optimizer, task family, seeds, and fixed **8000-step** budget, then preregisters the two Gate 1-competent algorithms as the sole focal pair: `SORT` and `PREFIX_PARITY`. Gate 2 does not search task pairs for a flattering effect.
+
+The new observable is the model's **state-dependent route fingerprint**. At the final query separator, every decoder block records the 96-dimensional `GELU'(z)` vector from the MLP and the per-head attention row. These are smooth routing coefficients, not literal binary branches.
+
+At residual layers 1 and 2 Gate 2 fits held-out affine maps between the focal tasks and then intervenes on only the query-separator residual under the unchanged source-task demonstrations. Five preregistered conditions are compared:
+
+- identity / no intervention;
+- task-mean translation;
+- fitted full affine transport;
+- deterministic norm-matched random displacement;
+- the actual paired target-task residual as a state-sufficiency upper-bound control.
+
+The same residual patch is re-applied during each autoregressive recomputation. Gate 2 measures both the generated answer and whether later GELU/attention fingerprints become more target-like. A claim of a changed **routing regime** is eligible only when the focal tasks remain behaviorally competent and affine transport beats both translation and norm-matched random controls in target behavior and downstream route shift.
+
+Gate 2 also includes a small causal pruning experiment. For each block, units are ranked by the absolute difference between the focal tasks' mean GELU-derivative coefficients. Exactly 10% of the MLP hidden units are masked using three fixed strategies: most selective, least selective, and deterministic random. This is an exploratory branch-pruning test, not a claim that derivative selectivity is an optimal pruning algorithm.
+
+Run Gate 2 locally with:
+
+```bash
+python -m transformer_study.experiment --preset gate2 --output artifacts/gate2
+python -m transformer_study.experiment --validate artifacts/gate2
+```
+
+On GitHub, open **Actions**, select **Gate 2**, and choose **Run workflow**. The full run is manual-only and writes the standard Gate 0/1 receipt plus `route_geometry.csv`, `causal_transport.csv`, `route_shift.csv`, `pruning.csv`, `gate2_causal_behavior.png`, and `gate2_route_shift.png`. Its artifact is named `transformer-study-gate2`.
