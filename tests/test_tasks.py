@@ -26,16 +26,20 @@ def test_exact_algorithms():
 def test_delta_mod_is_never_a_training_task():
     assert HELD_OUT_TASK is TaskName.DELTA_MOD
     assert HELD_OUT_TASK not in TRAIN_TASKS
-    assert set(TRAIN_TASKS) == {
-        TaskName.COPY,
-        TaskName.REVERSE,
-        TaskName.SORT,
-        TaskName.CUMSUM_MOD,
-        TaskName.PREFIX_PARITY,
-        TaskName.SWAP_PAIRS,
-    }
+    assert set(TRAIN_TASKS) == {TaskName.COPY, TaskName.REVERSE, TaskName.SORT, TaskName.CUMSUM_MOD,
+                                TaskName.PREFIX_PARITY, TaskName.SWAP_PAIRS}
 
 
 def test_swap_pairs_requires_even_length():
     with pytest.raises(ValueError, match="even"):
         apply_task(TaskName.SWAP_PAIRS, [1, 2, 3], 8)
+
+from transformer_study.config import gate0_config, gate1_config
+
+
+def test_gate1_changes_only_training_steps():
+    gate0 = gate0_config().to_dict()
+    gate1 = gate1_config().to_dict()
+    differing = {key for key in gate0 if gate0[key] != gate1[key]}
+    assert differing == {"steps"}
+    assert gate1["steps"] == 8000

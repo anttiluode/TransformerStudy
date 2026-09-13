@@ -38,6 +38,10 @@ def gate0_config() -> ExperimentConfig:
     return ExperimentConfig()
 
 
+def gate1_config() -> ExperimentConfig:
+    return replace(ExperimentConfig(), steps=8000)
+
+
 def smoke_config() -> ExperimentConfig:
     return replace(
         ExperimentConfig(),
