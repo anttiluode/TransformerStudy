@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-from transformer_study.experiment import run_experiment, validate_receipt
+from transformer_study.experiment import _preset, run_experiment, validate_receipt
+from transformer_study.receipt import render_gate1_summary, render_gate2_summary
 
 
 def test_smoke_run_writes_complete_receipt(tmp_path: Path):
@@ -41,13 +42,46 @@ def test_gate1_receipt_requires_gate1_extensions_but_smoke_does_not(tmp_path: Pa
     validate_receipt(out)
 
 
-from transformer_study.experiment import _preset
+def test_gate2_receipt_requires_gate1_and_gate2_extensions(tmp_path: Path):
+    out = tmp_path / "gate2-receipt"
+    run_experiment("smoke", out)
+    config = json.loads((out / "config.json").read_text())
+    config["preset"] = "gate2"
+    (out / "config.json").write_text(json.dumps(config))
+
+    try:
+        validate_receipt(out)
+    except ValueError as exc:
+        assert "Gate 1" in str(exc) or "Gate 2" in str(exc) or "gate2" in str(exc)
+    else:
+        raise AssertionError("Gate 2 receipt unexpectedly validated without extensions")
+
+    for filename in (
+        "translation_controls.csv", "correct_conditioned.csv", "composition_controls.csv",
+        "route_geometry.csv", "causal_transport.csv", "route_shift.csv", "pruning.csv",
+        "gate2_route_shift.png", "gate2_causal_behavior.png",
+    ):
+        (out / filename).write_text("placeholder\n")
+    metrics = json.loads((out / "metrics.json").read_text())
+    metrics.update({
+        "translation_controls": [],
+        "correct_conditioned": [],
+        "composition_controls": [],
+        "route_geometry": [],
+        "causal_transport": [],
+        "route_shift": [],
+        "pruning": [],
+    })
+    (out / "metrics.json").write_text(json.dumps(metrics))
+    validate_receipt(out)
 
 
 def test_gate1_cli_preset_is_fixed_at_8000_steps():
     assert _preset("gate1").steps == 8000
 
-from transformer_study.receipt import render_gate1_summary
+
+def test_gate2_cli_preset_is_fixed_at_8000_steps():
+    assert _preset("gate2").steps == 8000
 
 
 def test_gate1_summary_states_translation_null_and_competence_level():
@@ -82,3 +116,40 @@ def test_gate1_summary_states_translation_null_and_competence_level():
     assert "rank" in text.lower()
     assert "both-correct" in text.lower()
     assert "centered composition" in text.lower()
+
+
+def test_gate2_summary_reports_competence_causality_routing_and_pruning():
+    behavior = {"tasks": {"sort": {"exact": 0.90}, "prefix_parity": {"exact": 1.0}}}
+    route_geometry = [
+        {"block": 1, "feature": "gelu", "classifier_accuracy": 0.9, "shuffled_accuracy": 0.5},
+        {"block": 1, "feature": "attention", "classifier_accuracy": 0.8, "shuffled_accuracy": 0.5},
+    ]
+    causal = [
+        {"source": "sort", "target": "prefix_parity", "patch_layer": 1, "method": "identity",
+         "target_exact": 0.0, "target_exact_shift_vs_identity": 0.0},
+        {"source": "sort", "target": "prefix_parity", "patch_layer": 1, "method": "translation",
+         "target_exact": 0.1, "target_exact_shift_vs_identity": 0.1},
+        {"source": "sort", "target": "prefix_parity", "patch_layer": 1, "method": "affine",
+         "target_exact": 0.6, "target_exact_shift_vs_identity": 0.6},
+        {"source": "sort", "target": "prefix_parity", "patch_layer": 1, "method": "random_norm",
+         "target_exact": 0.1, "target_exact_shift_vs_identity": 0.1},
+        {"source": "sort", "target": "prefix_parity", "patch_layer": 1, "method": "true_target",
+         "target_exact": 0.8, "target_exact_shift_vs_identity": 0.8},
+    ]
+    shifts = [
+        {"method": "affine", "feature": "gelu", "target_minus_source_cosine": 0.3},
+        {"method": "translation", "feature": "gelu", "target_minus_source_cosine": 0.0},
+        {"method": "random_norm", "feature": "gelu", "target_minus_source_cosine": -0.1},
+    ]
+    pruning = [
+        {"strategy": "most_selective", "task": "sort", "exact_delta": -0.2},
+        {"strategy": "least_selective", "task": "sort", "exact_delta": 0.0},
+        {"strategy": "random", "task": "sort", "exact_delta": -0.05},
+    ]
+    text = render_gate2_summary(behavior, route_geometry, causal, shifts, pruning)
+    lower = text.lower()
+    assert "competent" in lower
+    assert "route" in lower
+    assert "true-target" in lower or "true target" in lower
+    assert "affine" in lower
+    assert "prun" in lower
