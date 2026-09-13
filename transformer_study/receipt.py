@@ -23,6 +23,11 @@ GATE1_FILES = {
 GATE1_KEYS = {
     "translation_controls", "correct_conditioned", "composition_controls",
 }
+GATE2_FILES = {
+    "route_geometry.csv", "causal_transport.csv", "route_shift.csv", "pruning.csv",
+    "gate2_route_shift.png", "gate2_causal_behavior.png",
+}
+GATE2_KEYS = {"route_geometry", "causal_transport", "route_shift", "pruning"}
 
 
 def json_safe(value: Any):
@@ -75,19 +80,30 @@ def validate_finite(value: Any, path: str = "metrics") -> None:
 
 def validate_receipt(output: str | Path) -> None:
     out = Path(output)
-    missing = REQUIRED_FILES - {p.name for p in out.iterdir()} if out.exists() else REQUIRED_FILES
+    names = {p.name for p in out.iterdir()} if out.exists() else set()
+    missing = REQUIRED_FILES - names
     if missing:
         raise ValueError(f"missing receipt files: {sorted(missing)}")
     config = json.loads((out / "config.json").read_text(encoding="utf-8"))
-    if config.get("preset") == "gate1":
-        missing_gate1_files = GATE1_FILES - {p.name for p in out.iterdir()}
+    preset = config.get("preset")
+    if preset in {"gate1", "gate2"}:
+        missing_gate1_files = GATE1_FILES - names
         if missing_gate1_files:
             raise ValueError(f"missing Gate 1 receipt files: {sorted(missing_gate1_files)}")
+    if preset == "gate2":
+        missing_gate2_files = GATE2_FILES - names
+        if missing_gate2_files:
+            raise ValueError(f"missing Gate 2 receipt files: {sorted(missing_gate2_files)}")
+
     metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
-    if config.get("preset") == "gate1":
+    if preset in {"gate1", "gate2"}:
         missing_gate1_keys = GATE1_KEYS - set(metrics)
         if missing_gate1_keys:
             raise ValueError(f"missing Gate 1 metrics keys: {sorted(missing_gate1_keys)}")
+    if preset == "gate2":
+        missing_gate2_keys = GATE2_KEYS - set(metrics)
+        if missing_gate2_keys:
+            raise ValueError(f"missing Gate 2 metrics keys: {sorted(missing_gate2_keys)}")
     if metrics.get("schema_version") != 1:
         raise ValueError("metrics schema_version must be 1")
     if metrics.get("status") != "complete":
@@ -190,6 +206,126 @@ def render_gate1_summary(
     return "\n\n".join(lines)
 
 
+def _mean_field(rows: list[dict], field: str) -> float | None:
+    values = [float(r[field]) for r in rows if field in r and r[field] is not None]
+    return float(np.mean(values)) if values else None
+
+
+def render_gate2_summary(
+    behavior: dict,
+    route_geometry: list[dict],
+    causal_transport: list[dict],
+    route_shift: list[dict],
+    pruning: list[dict],
+) -> str:
+    tasks = behavior.get("tasks", {})
+    sort_exact = float(tasks.get("sort", {}).get("exact", 0.0))
+    parity_exact = float(tasks.get("prefix_parity", {}).get("exact", 0.0))
+    eligible = sort_exact >= 0.80 and parity_exact >= 0.80
+    eligibility = (
+        "both preregistered focal tasks are competent; causal algorithmic interpretation is eligible"
+        if eligible
+        else "causal algorithmic interpretation is NOT ELIGIBLE because both preregistered focal tasks did not reach 0.80 exact accuracy"
+    )
+    lines = [
+        f"1. **Focal competence:** SORT exact={sort_exact:.3f}; PREFIX_PARITY exact={parity_exact:.3f}. {eligibility}.",
+    ]
+
+    if route_geometry:
+        route_bits = []
+        for feature in ("gelu", "attention"):
+            rows = [r for r in route_geometry if r.get("feature") == feature]
+            acc = _mean_field(rows, "classifier_accuracy")
+            shuffled = _mean_field(rows, "shuffled_accuracy")
+            if acc is not None:
+                route_bits.append(f"{feature} classifier {acc:.3f} vs shuffled {shuffled:.3f}")
+        lines.append(
+            "2. **Route fingerprints:** " + ("; ".join(route_bits) if route_bits else "no eligible route rows") + "."
+        )
+    else:
+        lines.append("2. **Route fingerprints:** unavailable.")
+
+    true_rows = [r for r in causal_transport if r.get("method") == "true_target"]
+    if true_rows:
+        best_true = max(true_rows, key=lambda r: float(r.get("target_exact_shift_vs_identity", 0.0)))
+        lines.append(
+            f"3. **True-target state sufficiency:** best true-target transplant changes target exact accuracy by "
+            f"{float(best_true.get('target_exact_shift_vs_identity', 0.0)):+.3f} at residual layer {best_true.get('patch_layer')}."
+        )
+    else:
+        lines.append("3. **True-target state sufficiency:** unavailable.")
+
+    method_means = {}
+    for method in ("affine", "translation", "random_norm"):
+        rows = [r for r in causal_transport if r.get("method") == method]
+        method_means[method] = _mean_field(rows, "target_exact_shift_vs_identity")
+    if method_means["affine"] is not None:
+        lines.append(
+            "4. **Affine causal behavior:** mean target-exact shift versus identity is "
+            f"affine {method_means['affine']:+.3f}, translation {method_means['translation']:+.3f}, "
+            f"norm-matched random {method_means['random_norm']:+.3f}."
+        )
+    else:
+        lines.append("4. **Affine causal behavior:** unavailable.")
+
+    shift_means = {}
+    for method in ("affine", "translation", "random_norm"):
+        rows = [r for r in route_shift if r.get("method") == method]
+        shift_means[method] = _mean_field(rows, "target_minus_source_cosine")
+    if shift_means["affine"] is not None:
+        lines.append(
+            "5. **Downstream route shift:** mean target-minus-source route cosine is "
+            f"affine {shift_means['affine']:+.3f}, translation {shift_means['translation']:+.3f}, "
+            f"norm-matched random {shift_means['random_norm']:+.3f}."
+        )
+    else:
+        lines.append("5. **Downstream route shift:** unavailable.")
+
+    if pruning:
+        strategy_means = {
+            strategy: _mean_field([r for r in pruning if r.get("strategy") == strategy], "exact_delta")
+            for strategy in ("most_selective", "least_selective", "random")
+        }
+        most_rows = [r for r in pruning if r.get("strategy") == "most_selective"]
+        worst = min(most_rows, key=lambda r: float(r.get("exact_delta", 0.0))) if most_rows else None
+        detail = ""
+        if worst is not None:
+            detail = (
+                f" Largest selective-pruning damage is {float(worst.get('exact_delta', 0.0)):+.3f} "
+                f"for {worst.get('task')} in block {worst.get('block')}."
+            )
+        lines.append(
+            "6. **Route-selective pruning:** mean exact-accuracy deltas are "
+            f"most-selective {strategy_means['most_selective']:+.3f}, "
+            f"least-selective {strategy_means['least_selective']:+.3f}, random {strategy_means['random']:+.3f}."
+            + detail
+        )
+    else:
+        lines.append("6. **Route-selective pruning:** unavailable.")
+
+    affine_behavior_wins = (
+        method_means.get("affine") is not None
+        and method_means.get("translation") is not None
+        and method_means.get("random_norm") is not None
+        and method_means["affine"] > max(method_means["translation"], method_means["random_norm"])
+    )
+    affine_route_wins = (
+        shift_means.get("affine") is not None
+        and shift_means.get("translation") is not None
+        and shift_means.get("random_norm") is not None
+        and shift_means["affine"] > max(shift_means["translation"], shift_means["random_norm"])
+    )
+    if eligible and affine_behavior_wins and affine_route_wins:
+        lines.append(
+            "**Routing-regime criterion:** eligible and satisfied at the aggregate level: affine transport beats both translation and norm-matched random controls in target behavior and downstream route shift. This supports a smooth routing-regime change, not a literal hard branch."
+        )
+    else:
+        lines.append(
+            "**Routing-regime criterion:** not satisfied at the aggregate level, or behaviorally ineligible. Do not claim that affine transport crossed a nonlinear routing regime from this run."
+        )
+    return "\n\n".join(lines)
+
+
 def render_results(
     out: Path,
     preset_name: str,
@@ -203,9 +339,13 @@ def render_results(
     translation_controls: list[dict] | None = None,
     correct_conditioned: list[dict] | None = None,
     composition_controls: list[dict] | None = None,
+    route_geometry: list[dict] | None = None,
+    causal_transport: list[dict] | None = None,
+    route_shift: list[dict] | None = None,
+    pruning: list[dict] | None = None,
 ) -> None:
     lines = [
-        "# Gate 0 Results", "", f"Preset: `{preset_name}`",
+        "# TransformerStudy Results", "", f"Preset: `{preset_name}`",
         f"Training steps: {cfg.steps}",
         f"Final training loss: {history[-1]:.6f}" if history else "Final training loss: n/a",
         "", "## Behavior", "",
@@ -249,7 +389,7 @@ def render_results(
         "- This experiment reports linear accessibility and transfer in residual geometry; it does not establish that algorithms are literally stored as vectors.",
         "",
     ]
-    if preset_name == "gate1":
+    if preset_name in {"gate1", "gate2"}:
         lines += [
             "", "## Gate 1: Translation null", "",
             render_gate1_summary(
@@ -257,6 +397,18 @@ def render_results(
                 translation_controls or [],
                 correct_conditioned or [],
                 composition_controls or [],
+            ),
+            "",
+        ]
+    if preset_name == "gate2":
+        lines += [
+            "", "## Gate 2: Causal transport across nonlinear routes", "",
+            render_gate2_summary(
+                behavior,
+                route_geometry or [],
+                causal_transport or [],
+                route_shift or [],
+                pruning or [],
             ),
             "",
         ]
