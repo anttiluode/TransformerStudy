@@ -118,3 +118,24 @@ A full run writes:
 - `novelty_orthogonal_energy.png`
 
 Engineering failures such as NaNs or malformed receipts return nonzero. Scientific disappointment does not.
+
+## Gate 1: translation null
+
+Gate 1 asks whether Gate 0's inter-task affine maps do more than add task-dependent mean offsets. It compares identity, translation, rank-1/2/4/8 centered corrections, and full affine ridge on the same disjoint held-out residual banks. The central null is
+
+```text
+h_B ~= h_A + (mu_B - mu_A)
+```
+
+Translation composition is an exact null because the offsets telescope: `A -> B -> C` gives the same mean offset as direct `A -> C`. Gate 1 therefore measures the extra held-out gain of centered/affine transformations beyond translation rather than treating composition alone as evidence for an algorithm algebra.
+
+The transformer architecture, task suite, episode format, seeds, optimizer, query-output-only loss, and residual extraction point are unchanged. Gate 1 changes only the fixed training budget from 2000 to **8000 steps**. Correct-conditioned metrics are evaluation-only: the maps are still fit on the complete map-fit bank and are never refit on a small successful subset.
+
+Run Gate 1 locally with:
+
+```bash
+python -m transformer_study.experiment --preset gate1 --output artifacts/gate1
+python -m transformer_study.experiment --validate artifacts/gate1
+```
+
+On GitHub, open **Actions**, select **Gate 1**, and choose **Run workflow**. The full 8000-step Gate 1 experiment is manual-only and is **not part of ordinary push/pull-request CI**. Its artifact is named `transformer-study-gate1`.
