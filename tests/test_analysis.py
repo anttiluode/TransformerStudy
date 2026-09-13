@@ -104,3 +104,65 @@ def test_rank_fraction_reports_smallest_rank_reaching_target_gain():
     rank_nmse = {1: 0.70, 2: 0.35, 4: 0.21, 8: 0.20}
     assert rank_for_fraction(1.0, rank_nmse, 0.20, fraction=0.90) == 4
     assert rank_for_fraction(0.20, rank_nmse, 0.20, fraction=0.90) is None
+
+from transformer_study.analysis import (
+    analyze_correct_conditioned,
+    analyze_translation_controls,
+)
+
+
+def _shared_bank(base: np.ndarray, transforms: dict, correct_value: bool = True):
+    states = {0: {}}
+    targets = {}
+    correct = {}
+    for task in TRAIN_TASKS:
+        matrix, offset = transforms[task]
+        states[0][task] = base @ matrix + offset
+        targets[task] = np.zeros((len(base), 4), dtype=np.int64)
+        correct[task] = np.full(len(base), correct_value, dtype=bool)
+    return ResidualBank(states, np.zeros((len(base), 4), dtype=np.int64), targets, correct)
+
+
+def test_translation_controls_detect_non_translation_geometry_on_test_bank():
+    rng = np.random.default_rng(103)
+    fit_latent = rng.normal(size=(192, 6))
+    test_latent = rng.normal(size=(192, 6)) + 3.0
+    transforms = {}
+    for i, task in enumerate(TRAIN_TASKS):
+        matrix = np.eye(6)
+        if task.value == "reverse":
+            matrix = matrix.copy()
+            matrix[0, 1] = 0.7
+        transforms[task] = (matrix, np.full(6, i * 0.2))
+    fit = _shared_bank(fit_latent, transforms)
+    test = _shared_bank(test_latent, transforms)
+    rows, _ = analyze_translation_controls(fit, test, ridge=1e-8)
+    row = next(r for r in rows if r["source"] == "copy" and r["target"] == "reverse")
+    assert row["translation_nmse"] > row["affine_nmse"]
+    assert row["absolute_gain"] > 0
+    assert row["centered_identity_nmse"] > row["full_centered_nmse"]
+
+
+def test_correct_conditioned_uses_full_fit_but_requires_twenty_test_rows():
+    rng = np.random.default_rng(104)
+    latent = rng.normal(size=(64, 5))
+    transforms = {task: (np.eye(5), np.full(5, i * 0.1)) for i, task in enumerate(TRAIN_TASKS)}
+    fit = _shared_bank(latent, transforms)
+    test = _shared_bank(latent + 0.5, transforms)
+    source, target = TRAIN_TASKS[0], TRAIN_TASKS[1]
+    test.correct[source][:] = False
+    test.correct[target][:] = False
+    test.correct[source][:19] = True
+    test.correct[target][:19] = True
+    rows = analyze_correct_conditioned(fit, test, ridge=1e-6, min_n=20)
+    row = next(r for r in rows if r["source"] == source.value and r["target"] == target.value)
+    assert row["n"] == 19
+    assert row["status"] == "underpowered"
+    assert row["translation_nmse"] is None
+    test.correct[source][19] = True
+    test.correct[target][19] = True
+    rows = analyze_correct_conditioned(fit, test, ridge=1e-6, min_n=20)
+    row = next(r for r in rows if r["source"] == source.value and r["target"] == target.value)
+    assert row["n"] == 20
+    assert row["status"] == "eligible"
+    assert row["translation_nmse"] is not None
