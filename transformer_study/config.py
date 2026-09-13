@@ -22,10 +22,16 @@ class ExperimentConfig:
     map_fit_seed_root: int = 3000
     map_test_seed_root: int = 4000
     scramble_seed: int = 5000
+    route_reference_seed_root: int = 3_000_000
+    causal_patch_seed_root: int = 4_000_000
+    pruning_seed_root: int = 5_000_000
     ridge_lambda: float = 1e-3
     eval_episodes: int = 192
     map_fit: int = 192
     map_test: int = 192
+    route_reference: int = 192
+    causal_patch: int = 96
+    pruning_eval: int = 192
     trained_competence: float = 0.80
     novel_competence: float = 0.50
     correct_split_min_n: int = 20
@@ -42,6 +48,10 @@ def gate1_config() -> ExperimentConfig:
     return replace(ExperimentConfig(), steps=8000)
 
 
+def gate2_config() -> ExperimentConfig:
+    return replace(ExperimentConfig(), steps=8000)
+
+
 def smoke_config() -> ExperimentConfig:
     return replace(
         ExperimentConfig(),
@@ -54,4 +64,7 @@ def smoke_config() -> ExperimentConfig:
         eval_episodes=8,
         map_fit=8,
         map_test=8,
+        route_reference=8,
+        causal_patch=4,
+        pruning_eval=8,
     )
