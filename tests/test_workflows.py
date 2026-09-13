@@ -29,6 +29,19 @@ def test_gate1_workflow_is_manual_only_and_runs_gate1():
     assert "actions/upload-artifact@v4" in text
 
 
-def test_ci_never_runs_gate1_training():
+def test_gate2_workflow_is_manual_only_and_runs_gate2():
+    text = Path(".github/workflows/gate2.yml").read_text()
+    assert "workflow_dispatch:" in text
+    assert "pull_request:" not in text
+    assert "push:" not in text
+    assert "--preset gate2" in text
+    assert "--validate artifacts/gate2" in text
+    assert "timeout-minutes: 60" in text
+    assert "actions/upload-artifact@v4" in text
+    assert "transformer-study-gate2" in text
+
+
+def test_ci_never_runs_full_gate_training():
     text = Path(".github/workflows/ci.yml").read_text()
     assert "--preset gate1" not in text
+    assert "--preset gate2" not in text
