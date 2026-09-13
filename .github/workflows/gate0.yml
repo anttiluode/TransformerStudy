@@ -1,5 +1,7 @@
 name: Gate 0
 on:
+  push:
+    branches: ["gate0-run"]
   workflow_dispatch:
 jobs:
   experiment:
