@@ -29,27 +29,29 @@ No individual claim is assumed true in advance.
 - PyTorch CPU is the only heavy dependency.
 - Fixed small sequence lengths and a single shared token vocabulary.
 - One tiny decoder-only transformer shared by all tasks.
-- Full experiment target: comfortably below the GitHub Actions job timeout and designed for a practical single-job run.
+- Normal push/PR CI must remain cheap; the full scientific run is manual-only.
 - Tests must stay much cheaper than the full experiment.
 
 ## Why in-context episodes rather than task-name tokens
 
-The model should not be told the algorithm name. Each example is a short in-context episode made of demonstrations plus one query:
+The model is not told the algorithm name. Each example is a short in-context episode made of demonstrations plus one query:
 
 ```text
 <x1> <SEP> <y1> <PAIR>
 <x2> <SEP> <y2> <PAIR>
-...
-<xq> <SEP> <QUERY>
+<x3> <SEP> <y3> <PAIR>
+<xq> <SEP> <yq>
 ```
 
-where all demonstrations in one episode use the same hidden algorithm.
+All demonstrations and the query in an episode use the same hidden algorithm. At evaluation time `<yq>` is withheld and generated autoregressively.
 
-At the query position, the model must infer which computation is active from the demonstrations. This gives a meaningful residual representation of inferred computation and permits a held-out algorithm to be presented without inventing an unseen task token.
+The residual at the final query `<SEP>` is therefore the primary pre-answer representation: the model has seen the demonstrations and query input but has not yet seen any query-answer token.
+
+This permits a held-out algorithm to be presented without inventing an unseen task token.
 
 ## Shared tape and symbol space
 
-Use a common fixed-length tape so the same input can be evaluated under every algorithm.
+Use a common fixed-length tape so the exact same query input can be evaluated under every algorithm.
 
 Default Gate 0 settings:
 
@@ -57,14 +59,14 @@ Default Gate 0 settings:
 - Tape length: `4`.
 - Demonstrations per episode: `3`.
 - One query per episode.
-- All outputs are also length 4 and use the same symbol vocabulary.
-- Special tokens provide separators and episode structure only; they do not name tasks.
+- All outputs are length 4 and use the same symbol vocabulary.
+- Special tokens provide separators and episode structure only; they never name tasks.
 
-The exact constants are configuration values, not scattered literals.
+The exact constants live in one experiment configuration object.
 
 ## Trained algorithm family
 
-Train on six distinct fixed-length transformations:
+Train on six distinct fixed-length transformations.
 
 ### A. COPY
 
@@ -86,7 +88,7 @@ Train on six distinct fixed-length transformations:
 
 `y[i] = sum(x[j] mod 2 for j <= i) mod 2`
 
-Outputs therefore use only symbol tokens 0 and 1, but remain in the shared vocabulary.
+Outputs use only symbol tokens 0 and 1 but remain in the shared vocabulary.
 
 ### F. SWAP_PAIRS
 
@@ -94,9 +96,9 @@ For tape length 4:
 
 `[x0, x1, x2, x3] -> [x1, x0, x3, x2]`
 
-The implementation should generalize pairwise swapping to any even tape length.
+The implementation generalizes pairwise swapping to any even tape length.
 
-These tasks share the same interface while requiring different computations: identity, permutation, ordering, modular accumulation, stateful binary accumulation, and local permutation.
+These tasks share one interface while requiring identity, global permutation, ordering, modular accumulation, binary state accumulation, and local permutation.
 
 ## Held-out algorithm
 
@@ -105,66 +107,91 @@ Use `DELTA_MOD` only at evaluation time:
 - `y[0] = x[0]`
 - `y[i] = (x[i] - x[i-1]) mod 8` for `i > 0`
 
-The model receives ordinary in-context demonstrations of `DELTA_MOD`, exactly as it receives demonstrations for the trained algorithms, but no parameter update is allowed.
+The frozen model receives ordinary in-context demonstrations of `DELTA_MOD`, exactly as it receives demonstrations for trained algorithms. No optimizer step, adapter, or parameter edit is allowed.
 
-This held-out task is intentionally related enough to the trained arithmetic family that a tiny model has a plausible chance to infer it, while still being a distinct unseen rule. If the model does not solve it above the declared behavioral threshold, geometry for the held-out task is still reported but must be labeled as an unsolved-novelty regime rather than evidence for algorithm invention.
+This held-out rule is related enough to the arithmetic family that a tiny model has a plausible chance to infer it, while remaining absent from training. If the model does not solve it above the declared behavioral threshold, its geometry is still reported but labeled an unsolved-novelty regime rather than evidence for algorithm invention.
 
 ## Model
 
 A tiny decoder-only causal transformer implemented directly with PyTorch modules.
 
-Initial configuration:
+Gate 0 model preset:
 
-- Layers: 4
-- Model width: 64
-- Attention heads: 4
-- MLP hidden width: 128
+- Layers: `3`
+- Model width: `48`
+- Attention heads: `4`
+- MLP hidden width: `96`
 - Learned token embeddings
 - Learned positional embeddings
 - Pre-layer normalization
 - GELU MLP
 - Causal attention mask
 - Shared output projection over the vocabulary
-- Dropout disabled for determinism and simplicity
+- Dropout: `0`
 
-The model API must support `return_residuals=True`, returning the residual stream after the embedding stage and after each full transformer block.
+The model API supports `return_residuals=True`, returning the residual stream after embeddings and after each full transformer block, for `layers + 1` residual tensors.
 
-If Gate 0 runtime is too high, reduce training steps or batch size before reducing width or depth, because the layer-wise geometry is part of the experiment.
+Layer-wise geometry is part of the experiment, so runtime reductions should first reduce analysis sample count or training steps rather than deleting layers.
 
 ## Training objective
 
 Train autoregressively on complete in-context episodes from a balanced mixture of the six trained algorithms.
 
-Loss is computed only on output-symbol positions, not on demonstration inputs or structural separators. This prevents the model from wasting capacity on copying the prompt format.
+**Loss is computed only on the four query-output symbol positions.** Demonstration outputs are visible context but are not prediction targets. This makes the optimization objective explicitly meta-learning-like: infer the hidden transformation from demonstrations, then answer the query.
 
-Training data is generated from deterministic seeded RNG streams. Evaluation examples use disjoint RNG seeds and are never replayed during training.
+Training data is generated from deterministic seeded RNG streams. Evaluation and geometric-analysis examples use disjoint RNG streams and are never replayed during training.
 
-Training stops at a fixed step budget. There is no adaptive early stopping in Gate 0 so runs remain easy to reproduce.
+Gate 0 default training preset:
+
+- optimizer: AdamW;
+- learning rate: `3e-4`;
+- weight decay: `0`;
+- batch size: `32`;
+- training steps: `2000`;
+- gradient clipping: `1.0`;
+- model/training seed: `17`;
+- training-data seed stream root: `1000`.
+
+Training uses a fixed step budget rather than adaptive early stopping.
+
+The values are calibration defaults, not scientific thresholds. If the first manual Actions run is too slow, the only allowed runtime calibration before interpreting results is to lower analysis sample counts and then training steps. Any changed preset must be written verbatim to `config.json` and `RESULTS.md`.
 
 ## Behavioral evaluation
 
-Before any geometric claim is interpreted, record exact-token output accuracy for each trained algorithm on held-out episodes.
+Before geometric claims are interpreted, record exact output quality for every task.
+
+Gate 0 evaluation uses `192` held-out episodes per task from fixed disjoint seeds.
 
 Report:
 
 - per-task exact-sequence accuracy;
 - per-token accuracy;
-- overall average;
+- overall trained-task average;
 - held-out `DELTA_MOD` exact-sequence and per-token accuracy.
 
-The geometry analysis is always produced, but any task below the configured competence floor must be marked as behaviorally unresolved.
+The geometry analysis is always produced, but any task below the configured competence floor is marked behaviorally unresolved.
 
-The initial competence floor for a trained task is exact-sequence accuracy >= 0.80. This threshold is a reporting rule, not a CI failure condition.
+Reporting thresholds:
+
+- trained-task competence: exact-sequence accuracy `>= 0.80`;
+- held-out novelty competence: exact-sequence accuracy `>= 0.50`.
+
+These are interpretation rules, never CI pass/fail rules.
 
 ## Residual extraction
 
-For paired geometric analysis, generate a bank of query inputs `x` and build one episode per trained algorithm using independently generated demonstrations but the exact same query tape.
+For paired geometric analysis, generate a bank of query tapes and construct one episode per algorithm for the exact same query tape. Demonstrations are independently generated per algorithm and per episode so the task signal cannot be a shared demonstration identity.
 
-At every layer, extract the residual vector at the query decision position immediately before generation of the query output. This is the primary task-state representation.
+At every layer, extract the residual vector at the final query `<SEP>` immediately before the first query-output token. This is the primary task-state representation.
 
-Also support an optional trajectory representation formed by concatenating or stacking residual states at each generated output position. Gate 0 analysis should begin with the single query-state representation and only use the trajectory form as a secondary diagnostic.
+Gate 0 uses two disjoint paired banks:
 
-All residuals and labels used by analysis are held-out from training.
+- map-fit bank: `192` query tapes;
+- map-test bank: `192` query tapes.
+
+An optional trajectory representation may stack residual states at generated output positions, but it is secondary and must not replace the pre-answer query-state analysis in Gate 0.
+
+All residuals used by analysis are held out from training.
 
 ## Analysis 1: task-mode separability
 
@@ -172,8 +199,8 @@ For every layer:
 
 1. Compute the mean residual vector per trained algorithm.
 2. Compute pairwise cosine similarity and Euclidean distance between task means.
-3. Train a tiny linear task classifier on a subset of residuals and test it on disjoint residuals.
-4. Compute PCA/SVD of centered task means and of all residual samples.
+3. Fit a closed-form ridge one-vs-rest task classifier on the fit bank and evaluate it on the test bank.
+4. Compute SVD of centered task means and of centered residual samples.
 
 Report task-mode rank and singular spectrum rather than assuming one direction per algorithm.
 
@@ -181,117 +208,133 @@ A shuffled-task-label classifier is the null baseline.
 
 ## Analysis 2: inter-algorithm linear maps
 
-For each ordered pair of trained algorithms `(A, B)` and each layer, create paired residual matrices from the same query inputs:
+For each ordered pair of trained algorithms `(A, B)` and each layer, create paired residual matrices from the same query tapes:
 
 `H_A in R^(n x d)` and `H_B in R^(n x d)`.
 
-Fit an affine ridge map on a fit split:
+Fit an affine ridge map on the fit bank:
 
 `H_B ~= H_A @ W_AB + b_AB`
 
-with a small fixed ridge coefficient selected in advance.
+using a fixed ridge coefficient `lambda = 1e-3` after feature centering/standard numerical conditioning.
 
-Evaluate on unseen paired query inputs.
+Evaluate only on the disjoint test bank.
 
 Primary metrics:
 
 - normalized mean-squared error;
 - cosine similarity between predicted and true residuals;
-- improvement over predicting the mean residual of B;
-- improvement over a random pairing baseline.
+- improvement over predicting the test-set mean residual of B using the fit-set B mean;
+- improvement over a deterministic random-pairing baseline.
 
-The primary scientific result is generalization to unseen inputs, not training fit.
+The primary scientific result is held-out generalization, not fit error.
 
 ## Analysis 3: map composition
 
-For triples `(A, B, C)`, compare:
+For row-vector affine maps,
 
-`W_AB @ W_BC`
+`A -> B: h_B = h_A W_AB + b_AB`
 
-with a directly fitted `W_AC`, using the appropriate affine handling for biases.
+and
 
-Two composition metrics are required:
+`B -> C: h_C = h_B W_BC + b_BC`,
 
-1. Parameter-space disagreement after normalization.
-2. Held-out action disagreement: apply the composed map to unseen A residuals and compare its predictions with true C residuals.
+so the composed map is
 
-The action metric is primary because two different matrices can act similarly on the occupied residual subspace.
+- `W_comp = W_AB @ W_BC`
+- `b_comp = b_AB @ W_BC + b_BC`.
 
-Include a baseline in which one constituent map is replaced by a random map matched in Frobenius norm.
+For triples `(A, B, C)`, compare that composition with the directly fitted `A -> C` map.
+
+Two metrics are required:
+
+1. normalized parameter-space disagreement;
+2. held-out action error: apply the composed affine map to unseen A residuals and compare with true C residuals.
+
+The action metric is primary because different matrices can act similarly on the occupied residual subspace.
+
+Include a deterministic baseline in which one constituent matrix is replaced by a Gaussian random matrix rescaled to the same Frobenius norm.
 
 ## Analysis 4: random orthogonal basis scramble
 
-Construct a deterministic random orthogonal matrix `Q` from a seeded Gaussian matrix using QR decomposition, correcting the sign convention for reproducibility.
+Construct a deterministic random orthogonal matrix `Q` from a seeded Gaussian matrix using QR decomposition with a deterministic diagonal-sign convention.
 
 Transform held-out residuals:
 
-`h' = h @ Q`
+`h_scrambled = h @ Q`.
 
-Then train the same tiny linear task classifier/readout on scrambled residuals and compare with the unscrumbled version.
+Run two fit/test probes on both original and scrambled residuals:
 
-Because an orthogonal basis change preserves distances and linear separability, this experiment is explicitly a control for accidental coordinate dependence in the analysis pipeline.
+1. the same ridge task classifier from Analysis 1;
+2. four per-output-position ridge classifiers predicting the correct query output token from the pre-answer residual.
 
-Gate 0 does not physically insert `Q` between transformer blocks. A later gate may do so together with compensated read/write matrices.
+Retrain only these tiny closed-form probes after scrambling; the transformer remains frozen.
+
+Report the difference between original and scrambled held-out accuracy. Because orthogonal changes of basis preserve linear information, near-equality is expected and functions as a pipeline/control check rather than evidence that random transformers themselves compute the task.
+
+Also assert numerical norm and pairwise-distance preservation in unit tests.
+
+Gate 0 does not physically insert `Q` between transformer blocks. That is reserved for a later gate.
 
 ## Analysis 5: known-task span and held-out orthogonal energy
 
-At each layer, form a known-task subspace from centered trained-task mean vectors. Use SVD with a fixed numerical tolerance to obtain an orthonormal basis `U_known`.
+At each layer, form a known-task subspace from centered trained-task mean vectors. Use SVD with numerical tolerance `max(shape) * eps * largest_singular_value` to obtain an orthonormal basis `U_known`.
 
-For a residual `h`, define the centered vector `z` relative to the global trained-task mean and compute:
+For a residual `h`, define `z` relative to the global trained-task mean and compute:
 
-`rho_perp = ||z - U_known U_known^T z||^2 / (||z||^2 + eps)`
+`rho_perp = ||z - U_known U_known^T z||^2 / (||z||^2 + eps)`.
 
 Measure `rho_perp` for:
 
-- each trained algorithm on held-out episodes;
+- every trained algorithm on held-out episodes;
 - held-out `DELTA_MOD` episodes;
-- a shuffled/control grouping.
+- a shuffled-task grouping as a null diagnostic.
 
-Report distributions, not only means.
+Report median, mean, standard deviation, and fixed quantiles rather than only a single average.
 
-The relevant quantity is the excess orthogonal energy of `DELTA_MOD` relative to the known-task control distribution.
+The relevant comparison is excess orthogonal energy of `DELTA_MOD` relative to the trained-task control distribution.
 
-No claim of novel-computation geometry is allowed unless `DELTA_MOD` is also behaviorally solved above the configured held-out competence threshold. For Gate 0, that threshold is exact-sequence accuracy >= 0.50, which is intentionally weaker than the trained-task threshold.
+No claim of novel-computation geometry is allowed unless `DELTA_MOD` also exceeds the `0.50` exact-sequence competence threshold.
 
 ## Analysis 6: relation between behavioral success and geometry
 
-For every episode, preserve whether the model answered the query correctly. Compare geometry for correct and incorrect episodes.
+Preserve whether every evaluation episode was answered exactly correctly.
 
-This prevents a misleading conclusion in which an apparently novel residual direction is merely the signature of failure or uncertainty.
+Compare `rho_perp` for correct and incorrect `DELTA_MOD` episodes. Emit this split only when both groups contain at least `20` episodes; otherwise record that the split was underpowered.
 
-For `DELTA_MOD`, report `rho_perp` separately for correct and incorrect episodes whenever both groups contain enough samples.
+This guards against interpreting a generic failure/uncertainty direction as a novel algorithmic direction.
 
 ## Anti-cheating and null controls
 
-Gate 0 must include the following controls:
+Gate 0 includes all of the following:
 
 - no task-name tokens;
 - training and evaluation RNG streams separated by seed;
-- paired map evaluation uses unseen query tapes;
+- map fitting and map testing use disjoint query tapes;
 - random-pairing baseline for linear maps;
 - mean-predictor baseline for linear maps;
 - shuffled-label baseline for mode classification;
 - random norm-matched map baseline for composition;
-- orthogonal scramble uses a fixed seed and preserves all residual samples exactly up to numerical tolerance;
-- held-out algorithm is absent from training data generation and training task enumeration.
-
-Unit tests should directly assert the last property.
+- fixed-seed orthogonal scramble with exact numerical invariance tests;
+- `DELTA_MOD` absent from the training task enumeration and training sampler;
+- unit tests that directly assert the held-out task cannot be sampled in training mode.
 
 ## Outputs
 
-A full run writes a self-contained directory, for example `artifacts/gate0/`, containing:
+A full run writes `artifacts/gate0/` containing:
 
-- `config.json` — exact experiment configuration and seeds;
-- `metrics.json` — machine-readable training, behavioral, map, composition, scramble, and novelty metrics;
+- `config.json` — exact model, optimizer, sample counts, and seeds;
+- `metrics.json` — machine-readable behavioral and geometric metrics;
 - `RESULTS.md` — compact human-readable scientific receipt;
-- `model.pt` — trained tiny model state dict;
-- `task_geometry.csv` — per-layer task mean / span summaries;
+- `model.pt` — trained model state dict;
+- `task_geometry.csv` — per-layer mode/span summaries;
 - `linear_maps.csv` — per-layer per-pair transfer metrics;
 - `composition.csv` — per-layer triple composition metrics;
-- `novelty.csv` — per-layer orthogonal-energy results;
-- a small set of PNG plots for singular spectra, map transfer by layer, and held-out orthogonal energy.
+- `novelty.csv` — per-layer orthogonal-energy metrics;
+- `scramble.csv` — original-vs-scrambled probe metrics;
+- PNG plots for singular spectra, map transfer by layer, and held-out orthogonal energy.
 
-The workflow uploads this directory as a GitHub Actions artifact.
+The full workflow uploads the directory as a GitHub Actions artifact even when the scientific hypothesis is unsupported.
 
 ## Repository layout planned for implementation
 
@@ -301,6 +344,7 @@ TransformerStudy/
   pyproject.toml
   transformer_study/
     __init__.py
+    config.py
     tasks.py
     episodes.py
     model.py
@@ -313,6 +357,7 @@ TransformerStudy/
     test_episodes.py
     test_model.py
     test_analysis.py
+    test_smoke.py
   .github/workflows/
     ci.yml
     gate0.yml
@@ -320,30 +365,25 @@ TransformerStudy/
     2026-09-13-multi-algorithm-residual-geometry-design.md
 ```
 
-Keep implementation files narrow enough that task generation, model behavior, training, and analysis can be tested independently.
+Implementation files remain small and independently testable.
 
 ## GitHub Actions design
 
 ### `ci.yml`
 
-Runs on pushes and pull requests.
+Triggers on pushes and pull requests.
 
-- Python 3.11
-- install CPU PyTorch and project test dependencies
-- run unit tests
-- run a microscopic smoke training job with very few steps
-- verify deterministic output shape and that the experiment command creates a valid metrics receipt
+- Python 3.11;
+- install CPU PyTorch and project test dependencies;
+- run unit tests;
+- run an 8-step microscopic smoke experiment with batch size 4 and tiny analysis banks;
+- verify deterministic shapes and a valid metrics receipt.
 
-The smoke job tests plumbing only; it does not establish scientific results.
+The smoke run validates plumbing only and makes no scientific claim.
 
 ### `gate0.yml`
 
-Runs the real Gate 0 experiment on GitHub-hosted CPU.
-
-Triggers:
-
-- `workflow_dispatch`
-- optionally pushes to `main` when experiment code or workflow files change, if runtime remains comfortably small after calibration
+The full scientific workflow is **manual-only** via `workflow_dispatch` in Gate 0. Normal pushes never start the long experiment.
 
 Steps:
 
@@ -352,23 +392,30 @@ Steps:
 3. install CPU PyTorch and project;
 4. run `python -m transformer_study.experiment --preset gate0 --output artifacts/gate0`;
 5. run receipt validation;
-6. upload `artifacts/gate0` regardless of whether the scientific hypothesis is supported.
+6. upload `artifacts/gate0` with `if: always()` while still allowing genuine engineering failures to mark the job red.
 
-The experiment command must exit nonzero only for engineering failures such as NaNs, malformed outputs, broken invariants, or insufficiently completed execution. Poor algorithm accuracy or failed linear transfer must be written as results and exit successfully.
+The experiment exits nonzero only for engineering failures such as NaNs, malformed outputs, broken invariants, or incomplete execution. Poor task accuracy, poor transfer, failed composition, or absent novelty effects are valid scientific outputs and exit successfully.
 
 ## Runtime strategy
 
-The implementation should expose batch size, training steps, analysis sample count, and seed count in configuration.
+The first full preset is exactly:
 
-Initial implementation target:
+- model: 3 layers, width 48, 4 heads, MLP 96;
+- training: 2000 steps, batch 32;
+- behavioral evaluation: 192 episodes/task;
+- map fit: 192 paired query tapes;
+- map test: 192 paired query tapes;
+- one training seed.
 
-- one training seed for the first automated Gate 0;
-- enough training steps to reach useful competence but with a hard conservative CPU budget;
-- hundreds, not tens of thousands, of held-out geometry samples;
-- vectorized analysis using NumPy/PyTorch linear algebra;
-- no hyperparameter sweep in Gate 0.
+No hyperparameter sweep runs in Gate 0.
 
-If the first Actions run is too slow, reduce analysis sample counts first, then training steps/batch size. Do not introduce paid infrastructure or external services.
+If the manual Actions run is too slow, calibration happens in this order:
+
+1. reduce fit/test/evaluation sample counts;
+2. reduce training steps;
+3. reduce batch size.
+
+Every calibration changes the saved preset and receipt. Do not add paid infrastructure or external services.
 
 ## Testing strategy
 
@@ -378,11 +425,11 @@ For fixed hand-written inputs, assert exact outputs for all seven transformation
 
 ### Episode tests
 
-Assert episode parse/format round trips, constant lengths, correct loss-mask positions, and absence of held-out task generation in training mode.
+Assert exact serialization length, query-output loss-mask positions, evaluation prompt truncation before `<yq>`, and absence of the held-out task from training sampling.
 
 ### Model tests
 
-Assert causal shapes, deterministic forward passes in eval mode, residual count equals `layers + 1`, and logits use the shared vocabulary.
+Assert causal shapes, deterministic eval-mode forward passes, residual count equals `layers + 1`, and logits use the shared vocabulary.
 
 ### Geometry tests
 
@@ -390,27 +437,28 @@ Use synthetic matrices with known transformations to test:
 
 - affine ridge recovery;
 - held-out prediction metrics;
-- affine composition;
-- orthogonal matrix construction and norm preservation;
+- affine composition including bias composition;
+- orthogonal matrix determinism, norm preservation, and distance preservation;
+- basis-invariance of ridge probes to numerical tolerance;
 - span projection and `rho_perp` edge cases;
 - shuffled/random baselines.
 
 ### Receipt test
 
-A tiny end-to-end run must create syntactically valid `config.json`, `metrics.json`, and `RESULTS.md`.
+A tiny end-to-end run creates syntactically valid `config.json`, `metrics.json`, and `RESULTS.md` and all required CSV files.
 
 ## Interpretation rules
 
-The README and generated receipt must distinguish evidence levels.
+The README and generated receipt distinguish evidence levels.
 
 Allowed examples:
 
-- "Residuals are linearly separable by trained algorithm at layer 3."
+- "Residuals are linearly separable by trained algorithm at layer 2."
 - "The fitted A->B map generalizes better than the mean and random-pair baselines."
 - "Composition is no better than the random-map control."
 - "DELTA_MOD produces higher orthogonal energy, but the model does not solve DELTA_MOD, so this is not evidence of novel-computation geometry."
 
-Disallowed examples unless directly supported:
+Disallowed unless directly supported:
 
 - "The transformer stores algorithms as vectors."
 - "Random transformations explain transformer intelligence."
@@ -421,14 +469,14 @@ Disallowed examples unless directly supported:
 Gate 0 is complete when:
 
 1. Unit tests and smoke CI pass on GitHub Actions CPU.
-2. The full experiment runs to completion on GitHub Actions CPU without external data or paid compute.
+2. The full manual experiment runs to completion on GitHub Actions CPU without external data or paid compute.
 3. The six trained-task behavioral metrics are reported.
 4. Layer-wise residual separability is reported.
-5. Every ordered algorithm pair has held-out linear-transfer metrics and baselines.
+5. Every ordered trained-algorithm pair has held-out linear-transfer metrics and baselines.
 6. Composition metrics and random-map controls are reported.
-7. Orthogonal basis-scramble controls are reported.
+7. Orthogonal basis-scramble task and output-readout controls are reported.
 8. Known-span and held-out `DELTA_MOD` orthogonal-energy measurements are reported.
-9. Correct-vs-incorrect novelty geometry is reported where sample counts permit.
+9. Correct-vs-incorrect novelty geometry is reported when sample counts permit, otherwise explicitly marked underpowered.
 10. `RESULTS.md` states what succeeded, what failed, and what Gate 1 should test next without upgrading negative findings into positive claims.
 
 The scientific hypothesis is not a completion criterion.
@@ -444,6 +492,6 @@ Do not implement these in Gate 0:
 - learned nonlinear maps between algorithm modes;
 - fine-tuning on the held-out algorithm;
 - additional task families such as associative lookup or regression;
-- attempting publication-style claims before Gate 0 establishes whether the geometry exists at all.
+- publication-style claims before Gate 0 establishes what geometry is actually present.
 
-Gate 0 should answer one question cleanly: when a tiny transformer must infer several different algorithms from demonstrations, what linear geometry actually appears in its shared residual stream?
+Gate 0 answers one question cleanly: **when a tiny transformer must infer several different algorithms from demonstrations, what linear geometry actually appears in its shared residual stream?**
