@@ -16,4 +16,7 @@ __all__ = [
     "translation_predict", "truncate_centered_correction",
     "analyze_composition", "analyze_linear_maps",
     "analyze_novelty", "analyze_scramble", "analyze_separability",
+    "analyze_correct_conditioned", "analyze_translation_controls",
 ]
+
+from .gate1_analysis import analyze_correct_conditioned, analyze_translation_controls
