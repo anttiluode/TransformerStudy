@@ -223,7 +223,7 @@ def render_gate2_summary(
     parity_exact = float(tasks.get("prefix_parity", {}).get("exact", 0.0))
     eligible = sort_exact >= 0.80 and parity_exact >= 0.80
     eligibility = (
-        "causal algorithmic interpretation is eligible"
+        "both preregistered focal tasks are competent; causal algorithmic interpretation is eligible"
         if eligible
         else "causal algorithmic interpretation is NOT ELIGIBLE because both preregistered focal tasks did not reach 0.80 exact accuracy"
     )
