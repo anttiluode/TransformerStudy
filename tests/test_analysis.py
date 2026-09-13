@@ -166,3 +166,18 @@ def test_correct_conditioned_uses_full_fit_but_requires_twenty_test_rows():
     assert row["n"] == 20
     assert row["status"] == "eligible"
     assert row["translation_nmse"] is not None
+
+from transformer_study.analysis import analyze_composition_controls
+
+
+def test_translation_composition_matches_direct_translation_to_roundoff():
+    rng = np.random.default_rng(105)
+    fit_latent = rng.normal(size=(128, 5))
+    test_latent = rng.normal(size=(128, 5))
+    transforms = {task: (np.eye(5), np.full(5, i * 0.25)) for i, task in enumerate(TRAIN_TASKS)}
+    fit = _shared_bank(fit_latent, transforms)
+    test = _shared_bank(test_latent, transforms)
+    _, bundle = analyze_translation_controls(fit, test, ridge=1e-8)
+    rows = analyze_composition_controls(fit, test, bundle, ridge=1e-8)
+    assert rows
+    assert max(abs(r["translation_composed_nmse"] - r["translation_direct_nmse"]) for r in rows) < 1e-12
