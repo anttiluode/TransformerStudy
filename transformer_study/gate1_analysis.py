@@ -7,6 +7,7 @@ import numpy as np
 from .analysis_core import (
     apply_affine,
     centered_predict,
+    compose_affine,
     fit_affine_ridge,
     fit_centered_ridge,
     mean_cosine,
@@ -155,5 +156,62 @@ def analyze_correct_conditioned(
                 "relative_gain": metrics["relative_gain"],
                 "centered_identity_nmse": metrics["centered_identity_nmse"],
                 "full_centered_nmse": metrics["full_centered_nmse"],
+            })
+    return rows
+
+
+def analyze_composition_controls(
+    fit_bank,
+    test_bank,
+    map_bundle: dict,
+    ridge: float,
+) -> list[dict]:
+    del fit_bank, ridge
+    rows: list[dict] = []
+    tasks = list(TRAIN_TASKS)
+    affine_maps = map_bundle["affine"]
+    centered_maps = map_bundle["centered"]
+    means = map_bundle["means"]
+    for layer in sorted(test_bank.states):
+        for a, b, c in permutations(tasks, 3):
+            x = np.asarray(test_bank.states[layer][a], dtype=np.float64)
+            y = np.asarray(test_bank.states[layer][c], dtype=np.float64)
+
+            w_ab, b_ab = affine_maps[(layer, a, b)]
+            w_bc, b_bc = affine_maps[(layer, b, c)]
+            w_ac, b_ac = affine_maps[(layer, a, c)]
+            w_comp, b_comp = compose_affine(w_ab, b_ab, w_bc, b_bc)
+            affine_direct = apply_affine(x, w_ac, b_ac)
+            affine_composed = apply_affine(x, w_comp, b_comp)
+
+            mu_a = means[(layer, a)]
+            mu_b = means[(layer, b)]
+            mu_c = means[(layer, c)]
+            translation_direct = translation_predict(x, mu_a, mu_c)
+            via_b = translation_predict(x, mu_a, mu_b)
+            translation_composed = translation_predict(via_b, mu_b, mu_c)
+
+            m_ab = centered_maps[(layer, a, b)]
+            m_bc = centered_maps[(layer, b, c)]
+            m_ac = centered_maps[(layer, a, c)]
+            x_centered = x - mu_a
+            y_centered = y - mu_c
+            centered_direct = x_centered @ m_ac
+            centered_composed = x_centered @ (m_ab @ m_bc)
+            denom = np.linalg.norm(m_ac) + 1e-12
+
+            rows.append({
+                "layer": int(layer),
+                "a": a.value,
+                "b": b.value,
+                "c": c.value,
+                "affine_direct_nmse": normalized_mse(affine_direct, y),
+                "affine_composed_nmse": normalized_mse(affine_composed, y),
+                "translation_direct_nmse": normalized_mse(translation_direct, y),
+                "translation_composed_nmse": normalized_mse(translation_composed, y),
+                "translation_action_difference": float(np.max(np.abs(translation_direct - translation_composed))),
+                "centered_direct_nmse": normalized_mse(centered_direct, y_centered),
+                "centered_composed_nmse": normalized_mse(centered_composed, y_centered),
+                "centered_parameter_disagreement": float(np.linalg.norm(m_ab @ m_bc - m_ac) / denom),
             })
     return rows
