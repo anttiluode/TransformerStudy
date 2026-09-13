@@ -1,0 +1,120 @@
+# TransformerStudy
+
+A small controlled study of **algorithms inside one transformer**.
+
+Gate 0 asks a deliberately narrow question: when a tiny decoder-only transformer has to infer several different sequence transformations from in-context demonstrations, what linear geometry appears in its shared residual stream?
+
+The experiment does **not** assume the hypothesis is true. Low task accuracy, poor linear transfer, failed map composition, or no held-out novelty effect are valid scientific results and are written to the receipt rather than treated as CI failures.
+
+## Gate 0 tasks
+
+The model is trained from scratch on six hidden transformations over the same four-symbol tape and the same vocabulary:
+
+- `COPY`
+- `REVERSE`
+- `SORT`
+- `CUMSUM_MOD`
+- `PREFIX_PARITY`
+- `SWAP_PAIRS`
+
+The model is never given a task-name token. Each episode contains three input/output demonstrations followed by one query input. Training loss applies only to the four query-output symbols.
+
+`DELTA_MOD` is held out completely from training. At evaluation time it is presented only through demonstrations, with the frozen model.
+
+## What Gate 0 measures
+
+After training, the model is frozen. The study extracts the residual vector at the final query separator, immediately before any query-answer token is generated, and measures:
+
+1. layer-wise linear separability of the six trained tasks;
+2. held-out affine maps `T_A->B` between paired residual states from the same query tapes;
+3. approximate composition `T_B->C(T_A->B(h))` versus direct `T_A->C`;
+4. a fixed random orthogonal scramble followed by fresh tiny linear probes;
+5. the fraction of residual energy outside the span of trained-task means for `DELTA_MOD`;
+6. whether the held-out geometry differs between correct and incorrect `DELTA_MOD` episodes.
+
+Every analysis has a null/control: shuffled task labels, random pairings, mean prediction, norm-matched random maps, or the coordinate-preserving orthogonal scramble.
+
+## Interpretation guardrails
+
+The trained-task exact-sequence threshold of **0.80** and the held-out `DELTA_MOD` threshold of **0.50** are interpretation filters, not test gates.
+
+The orthogonal scramble is a **coordinate-invariance control**. Preserving linear probe performance after an orthogonal rotation is expected linear algebra and is **not evidence for random transformers** computing the algorithms.
+
+Likewise, high `DELTA_MOD` orthogonal energy is not evidence for novel computation if `DELTA_MOD` exact accuracy is below **0.50**. In that regime the receipt explicitly labels the novelty interpretation as ineligible.
+
+Gate 0 can support statements such as “residuals are linearly separable by task” or “an A→B map generalizes better than its random-pair baseline.” It does not by itself justify saying that the transformer literally stores algorithms as vectors.
+
+## Install and test
+
+Python 3.11 is the reference environment.
+
+```bash
+python -m pip install -e '.[test]'
+pytest -q
+```
+
+Run the cheap smoke experiment locally:
+
+```bash
+python -m transformer_study.experiment --preset smoke --output artifacts/smoke
+python -m transformer_study.experiment --validate artifacts/smoke
+```
+
+The smoke preset validates plumbing only. It uses one small layer, eight training steps, and tiny analysis banks; its scientific scores should not be interpreted.
+
+## Full GitHub Actions experiment
+
+The full run is intentionally **manual-only** so normal pushes do not spend a long CPU job.
+
+In GitHub:
+
+1. open **Actions**;
+2. select **Gate 0**;
+3. choose **Run workflow**;
+4. download the `transformer-study-gate0` artifact after completion.
+
+The workflow runs:
+
+```bash
+python -m transformer_study.experiment --preset gate0 --output artifacts/gate0
+python -m transformer_study.experiment --validate artifacts/gate0
+```
+
+The artifact contains the exact configuration, trained state dict, JSON metrics, CSV analysis tables, plots, and `RESULTS.md`.
+
+## Default full preset
+
+- 3 decoder blocks
+- width 48
+- 4 attention heads
+- MLP width 96
+- tape length 4, modulus 8
+- 3 demonstrations per episode
+- AdamW, learning rate `3e-4`
+- batch size 32
+- 2000 training steps
+- 192 behavioral episodes per task
+- 192 paired map-fit queries
+- 192 disjoint paired map-test queries
+- one training seed
+
+If the first manual Actions run is too slow, the approved calibration order is: reduce analysis sample counts, then training steps, then batch size. Any changed preset must be recorded in the receipt before scientific interpretation.
+
+## Output receipt
+
+A full run writes:
+
+- `config.json`
+- `metrics.json`
+- `RESULTS.md`
+- `model.pt`
+- `task_geometry.csv`
+- `linear_maps.csv`
+- `composition.csv`
+- `novelty.csv`
+- `scramble.csv`
+- `singular_spectra.png`
+- `map_transfer.png`
+- `novelty_orthogonal_energy.png`
+
+Engineering failures such as NaNs or malformed receipts return nonzero. Scientific disappointment does not.
