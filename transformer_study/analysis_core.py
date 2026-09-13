@@ -116,3 +116,61 @@ def mean_cosine(pred: np.ndarray, true: np.ndarray, eps: float = 1e-12) -> float
     dot = np.sum(pred * true, axis=1)
     denom = np.linalg.norm(pred, axis=1) * np.linalg.norm(true, axis=1) + eps
     return float(np.mean(dot / denom))
+
+
+def fit_centered_ridge(
+    x: np.ndarray, y: np.ndarray, ridge: float = 1e-3
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    if x.ndim != 2 or y.ndim != 2 or x.shape != y.shape:
+        raise ValueError("x and y must be matrices with identical shape")
+    mu_x = x.mean(axis=0)
+    mu_y = y.mean(axis=0)
+    xc = x - mu_x
+    yc = y - mu_y
+    gram = xc.T @ xc + np.eye(x.shape[1], dtype=np.float64) * float(ridge)
+    rhs = xc.T @ yc
+    try:
+        matrix = np.linalg.solve(gram, rhs)
+    except np.linalg.LinAlgError:
+        matrix = np.linalg.pinv(gram) @ rhs
+    return mu_x, mu_y, matrix
+
+
+def translation_predict(x: np.ndarray, mu_x: np.ndarray, mu_y: np.ndarray) -> np.ndarray:
+    return np.asarray(x, dtype=np.float64) + np.asarray(mu_y) - np.asarray(mu_x)
+
+
+def centered_predict(
+    x: np.ndarray, mu_x: np.ndarray, mu_y: np.ndarray, matrix: np.ndarray
+) -> np.ndarray:
+    return np.asarray(mu_y) + (np.asarray(x, dtype=np.float64) - np.asarray(mu_x)) @ np.asarray(matrix)
+
+
+def truncate_centered_correction(matrix: np.ndarray, rank: int) -> np.ndarray:
+    matrix = np.asarray(matrix, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError("matrix must be square")
+    if rank < 0 or rank > matrix.shape[0]:
+        raise ValueError("rank out of range")
+    correction = matrix - np.eye(matrix.shape[0], dtype=np.float64)
+    u, s, vt = np.linalg.svd(correction, full_matrices=False)
+    kept = (u[:, :rank] * s[:rank]) @ vt[:rank]
+    return np.eye(matrix.shape[0], dtype=np.float64) + kept
+
+
+def rank_for_fraction(
+    translation_nmse: float,
+    rank_nmse: dict[int, float],
+    affine_nmse: float,
+    fraction: float = 0.90,
+) -> int | None:
+    full_gain = float(translation_nmse) - float(affine_nmse)
+    if full_gain <= 0:
+        return None
+    target = fraction * full_gain
+    for rank in sorted(rank_nmse):
+        if float(translation_nmse) - float(rank_nmse[rank]) >= target:
+            return int(rank)
+    return None
