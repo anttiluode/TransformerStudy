@@ -64,3 +64,48 @@ def render_gate1_plots(out: Path, rows: list[dict]) -> None:
     fig.tight_layout()
     fig.savefig(out / "affine_gain_over_translation.png", dpi=120)
     plt.close(fig)
+
+
+def render_gate2_plots(out: Path, causal_rows: list[dict], route_rows: list[dict]) -> None:
+    methods = ["identity", "translation", "affine", "random_norm", "true_target"]
+    layers = sorted({int(r["patch_layer"]) for r in causal_rows})
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for method in methods:
+        values = [
+            np.mean([
+                float(r["target_exact"])
+                for r in causal_rows
+                if int(r["patch_layer"]) == layer and r["method"] == method
+            ])
+            for layer in layers
+        ]
+        ax.plot(layers, values, marker="o", label=method)
+    ax.set_xlabel("patched residual layer")
+    ax.set_ylabel("mean target exact accuracy")
+    ax.set_title("Gate 2: causal target behavior")
+    if layers:
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out / "gate2_causal_behavior.png", dpi=120)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for method in methods:
+        values = [
+            np.mean([
+                float(r["target_minus_source_cosine"])
+                for r in route_rows
+                if int(r["patch_layer"]) == layer and r["method"] == method
+            ])
+            for layer in layers
+        ]
+        ax.plot(layers, values, marker="o", label=method)
+    ax.axhline(0.0)
+    ax.set_xlabel("patched residual layer")
+    ax.set_ylabel("mean target - source route cosine")
+    ax.set_title("Gate 2: downstream nonlinear route shift")
+    if layers:
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out / "gate2_route_shift.png", dpi=120)
+    plt.close(fig)
