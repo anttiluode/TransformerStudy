@@ -80,13 +80,15 @@ def greedy_query_output(
     vocab: Vocabulary,
     output_len: int,
     device: str | torch.device = "cpu",
+    residual_patch: dict | None = None,
+    mlp_masks: dict[int, torch.Tensor] | None = None,
 ) -> list[int]:
     device = torch.device(device)
     tokens = list(prompt)
     model.eval()
     for _ in range(output_len):
         x = torch.tensor([tokens], dtype=torch.long, device=device)
-        logits = model(x)
+        logits = model(x, residual_patch=residual_patch, mlp_masks=mlp_masks)
         # Query answers are defined to be symbol tokens only. Restricting the
         # decoder to that known output grammar avoids treating separators as
         # semantic answers while leaving all symbol probabilities untouched.
@@ -111,6 +113,7 @@ def evaluate_task(
     n: int | None = None,
     seed_root: int | None = None,
     device: str | torch.device = "cpu",
+    mlp_masks: dict[int, torch.Tensor] | None = None,
 ) -> BehaviorMetrics:
     n = cfg.eval_episodes if n is None else n
     base = cfg.eval_seed_root if seed_root is None else seed_root
@@ -124,7 +127,12 @@ def evaluate_task(
         rng = np.random.default_rng(base + task_offset + i)
         episode = make_episode(task, cfg, rng, vocab)
         pred = greedy_query_output(
-            model, make_eval_prompt(episode), vocab, cfg.tape_len, device=device
+            model,
+            make_eval_prompt(episode),
+            vocab,
+            cfg.tape_len,
+            device=device,
+            mlp_masks=mlp_masks,
         )
         predictions.append(pred)
         targets.append(episode.query_target)
